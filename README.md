@@ -17,7 +17,7 @@ This repository contains the source code associated with the research article:
 
 ## 📋 Requirements
 
-The codebase is developed in **Python** and requires packages: numpy, scipy, matplotlib, pypoman, itertools, time, qutip, qbsim
+The codebase is developed in **Python** and requires packages: numpy, scipy, matplotlib, pypoman, itertools, time, qutip, qbsim.
 
 
 ## 📂 Repository Structure
