@@ -1,211 +1,296 @@
+"""
+Visualization of the convergence of the outer-approximating polytope
+=======================================================
+此脚本用于可视化任意维 4-outcome POVM 外近似凸多面体的收敛过程
+
+作者: [yang]
+日期: 2026-1-25
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from scipy.spatial import ConvexHull
-from scipy.linalg import eigh
-from qbism import *
+from scipy.linalg import svd, eigh
 from pypoman import compute_polytope_vertices
+from qbism import *
 
 # ==========================================
-# 0. 期刊级样式 (Publication Style)
+# 0. 全局样式设置
 # ==========================================
 def set_pub_style():
     mpl.rcParams.update({
         "font.family": "serif",
-        "font.serif": ["Times New Roman", "STIXGeneral"],
-        "mathtext.fontset": "stix",
-        "font.size": 11,
-        "axes.labelsize": 12,
-        "figure.dpi": 150,
-        "savefig.dpi": 300,
-        # 轴刻度设置
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
+        "font.serif": ["Times New Roman", "STIXGeneral", "DejaVu Serif"],
+        "mathtext.fontset": "cm",
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+        "figure.dpi": 120,
         "xtick.direction": "in",
         "ytick.direction": "in",
     })
+
 set_pub_style()
 
 # ==========================================
-# 1. 外部逼近算法 (带熵值记录)
+# 1. 数学工具 (N=4 POVM)
 # ==========================================
-def run_outer_approximation(POVM, max_iter=20):
+def _normalize_povm(POVM):
+    d = POVM[0].shape[0]
+    S = sum(POVM)
+    if np.allclose(S, np.eye(d)): return POVM
+    L = np.linalg.cholesky(S)
+    Linv = np.linalg.inv(L)
+    return [Linv.conj().T @ E @ Linv for E in POVM]
+
+def _vec_real(H):
+    return np.hstack([np.real(H).ravel(), np.imag(H).ravel()])
+
+def _affine_basis(POVM):
+    d = POVM[0].shape[0]
     n = len(POVM)
-    print(f"--- Processing (N={n}, d={POVM[0].shape[0]}) ---")
+    trE = np.array([np.trace(E).real for E in POVM])
+    s = trE / d
+    rows = []
+    for i, E in enumerate(POVM):
+        Ei0 = E - (trE[i] / d) * np.eye(d)
+        rows.append(_vec_real(Ei0))
+    M = np.vstack(rows)
+    U, S, Vt = svd(M, full_matrices=False)
+    tol = 1e-10
+    r = int(np.sum(S > tol * S[0]))
+    Q = U[:, :r]
+    ones = np.ones(n)
+    alpha = (ones @ Q) / n
+    Q = Q - np.outer(ones, alpha)
+    Q, _ = np.linalg.qr(Q, mode='reduced')
+    return s, Q
+
+def _entropy(p):
+    p = np.clip(p, 1e-16, 1.0)
+    return float(-np.sum(p * np.log(p)))
+
+def _entropy_grad(p):
+    p = np.clip(p, 1e-16, 1.0)
+    g = -(np.log(p) + 1.0)
+    return g / np.linalg.norm(g)
+
+def _support_h(POVM, u):
+    R = sum(u[i] * POVM[i] for i in range(len(POVM)))
+    return float(np.linalg.eigvalsh(R)[-1])
+
+def _p_from_psi(POVM, psi):
+    return np.array([np.real(psi.conj().T @ E @ psi) for E in POVM])
+
+# ==========================================
+# 2. 计算核心
+# ==========================================
+def run_solver(POVM, max_iter=30):
+    POVM = _normalize_povm(POVM)
+    n = len(POVM)
+    s, Q = _affine_basis(POVM)
     
-    def h_func(r): 
-        # 计算支撑平面
-        return np.linalg.eigvalsh(sum(r[i] * POVM[i] for i in range(n)))[0]
+    # 初始 Box 约束 (更宽松一点，防止数值误差导致初始切片丢失)
+    A, b = [], []
+    # 理论最大值是1，稍微放宽到1.001确保包含边界
+    umax = [1.0 for _ in range(n)] 
     
-    def target_grad(p):
-        # 熵的梯度
-        p = np.clip(p, 1e-16, 1)
-        g = -(np.log2(p) + 1.442695)
-        return g / np.linalg.norm(g)
-    # 初始约束: Simplex (sum=1, p>=0)
-    Rmat = [np.ones(n), -np.ones(n)]
-    hvec = [1.0, -1.0]
     for i in range(n):
-        r = np.zeros(n); r[i] = 1.0
-        Rmat.append(r); hvec.append(0.0)
-    Rmat, hvec = np.array(Rmat), np.array(hvec)
-    
+        A.append(-Q[i]); b.append(s[i])       # p_i >= 0
+        A.append(Q[i]);  b.append(1.0 - s[i]) # p_i <= 1
+        
+    A, b = np.array(A), np.array(b)
+
     history = []
-    for k in range(max_iter + 1):
+    c_plus = float('inf')
+    
+    print(f"Start Solver: N={n}, DOF={Q.shape[1]}")
+    
+    for k in range(1, max_iter + 1):
         try:
-            verts = np.array(compute_polytope_vertices(-Rmat, -hvec))
+            verts_z = np.array(compute_polytope_vertices(A, b))
         except: break
-        if len(verts) == 0: break
+        if len(verts_z) == 0: break
+
+        verts_p = s + verts_z @ Q.T
         
-        # 计算熵 (防止 log(0))
-        entropies = [-np.sum(v * np.log2(np.clip(v, 1e-16, 1))) for v in verts]
-        min_h = np.min(entropies)
+        vals = np.array([_entropy(p) for p in verts_p])
+        best_idx = np.argmin(vals)
+        c_minus = vals[best_idx]
+        p_best = verts_p[best_idx]
         
-        # 修正 -0.0000 问题
-        if abs(min_h) < 1e-10: min_h = 0.0
-            
-        best_v = verts[np.argmin(entropies)]
+        g = _entropy_grad(p_best)
+        R_op = sum(g[i] * POVM[i] for i in range(n))
+        _, v = eigh(R_op)
+        psi = v[:, 0]
+        p_real = _p_from_psi(POVM, psi)
+        c_plus = min(c_plus, _entropy(p_real))
+        gap = c_plus - c_minus
+
+        history.append({
+            'iter': k,
+            'verts': verts_p,
+            'lb': c_minus,
+            'gap': gap,
+            'best_v': p_best
+        })
         
-        history.append({'iter': k, 'verts': verts, 'min_h': min_h, 'best_v': best_v})
-        
-        grad = target_grad(best_v)
-        cut_val = h_func(grad)
-        if abs(np.dot(grad, best_v) - cut_val) < 1e-6: break
-        Rmat = np.vstack([Rmat, grad])
-        hvec = np.append(hvec, cut_val)
+        print(f"Iter {k}: V={len(verts_p)}, Gap={gap:.4e}")
+
+        if gap < 1e-9: 
+            print("Converged.")
+            break
+
+        hval = _support_h(POVM, -g)
+        Ai = -(g @ Q)
+        bi = hval + float(g @ s)
+        A = np.vstack([A, Ai])
+        b = np.hstack([b, bi])
+
     return history
+
 # ==========================================
-# 2. 绘图美化 (关键修改部分)
+# 3. 绘图核心 (修正坐标轴范围)
 # ==========================================
-def style_3d_axis(ax):
-    """移除灰色背景，简化刻度，避免文字重叠"""
-    # 移除背景板颜色
+def style_axis_clean(ax):
+    """设置去背景、完整范围坐标轴"""
+    # 1. 移除背景板
     ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
     ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
     ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
     
-    # 细化网格线
-    ax.xaxis._axinfo["grid"].update({"color": "lightgray", "linewidth": 0.5, "linestyle": ":"})
-    ax.yaxis._axinfo["grid"].update({"color": "lightgray", "linewidth": 0.5, "linestyle": ":"})
-    ax.zaxis._axinfo["grid"].update({"color": "lightgray", "linewidth": 0.5, "linestyle": ":"})
-    # 关键：设置坐标轴范围，稍微大于1，防止顶点被切
-    pad = 0.05
-    ax.set_xlim(0 - pad, 1 + pad)
-    ax.set_ylim(0 - pad, 1 + pad)
-    ax.set_zlim(0 - pad, 1 + pad)
-    # 关键：简化刻度，只显示 0, 0.5, 1
+    # 2. 网格线样式
+    grid_prop = {"color": "#d9d9d9", "linewidth": 0.5, "linestyle": ":"}
+    ax.xaxis._axinfo["grid"].update(grid_prop)
+    ax.yaxis._axinfo["grid"].update(grid_prop)
+    ax.zaxis._axinfo["grid"].update(grid_prop)
+    
+    # 3. 范围修正：放宽到 [0, 1.0]
+    # 因为 p_i 最大可能为 1，加上 0.05 的 buffer 确保不切边
+    limit_min = -0.05
+    limit_max = 1.05
+    
+    ax.set_xlim(limit_min, limit_max)
+    ax.set_ylim(limit_min, limit_max)
+    ax.set_zlim(limit_min, limit_max)
+    
+    # 4. 标准刻度
     ticks = [0.0, 0.5, 1.0]
     ax.set_xticks(ticks)
     ax.set_yticks(ticks)
     ax.set_zticks(ticks)
-def plot_polytope_evolution(history, n_outcomes):
-    total_frames = len(history)
-    if total_frames == 0: return
-    # 选帧：保证第一帧(Simplex)和最后一帧被选中
-    indices = np.unique(np.linspace(0, total_frames - 1, 6).astype(int))
     
-    fig = plt.figure(figsize=(12, 8))
+    # 5. 轴标签
+    ax.set_xlabel(r'$p_1$', labelpad=5)
+    ax.set_ylabel(r'$p_2$', labelpad=5)
+    ax.set_zlabel(r'$p_3$', labelpad=5)
+
+def plot_2x2_style(history):
+    n_total = len(history)
+    if n_total == 0: return
+
+    # 自动选择4个关键帧
+    if n_total < 4:
+        indices = np.arange(n_total)
+        while len(indices) < 4: indices = np.append(indices, n_total-1)
+    else:
+        indices = np.linspace(0, n_total-1, 4).astype(int)
+        indices[-1] = n_total - 1
+        indices = np.unique(indices)
+        while len(indices) < 4: indices = np.append(indices, n_total-1)
+        indices = np.sort(indices)
+
+    fig = plt.figure(figsize=(7, 6))
     
-    # 颜色配置 (Science 风格)
-    # 多面体颜色：通透的蓝绿色
-    face_color_base = np.array([0/255, 119/255, 136/255]) 
+    # 颜色定义
+    face_color = np.array([0/255, 119/255, 136/255]) 
     edge_color = '#333333'
-    best_pt_color = '#EE3377' # Magenta/Red 用于突出重点
-    
-    for plot_idx, frame_idx in enumerate(indices):
+    best_pt_color = '#EE3377' 
+
+    for plot_i, frame_idx in enumerate(indices):
         data = history[frame_idx]
-        verts = data['verts']
-        min_h = data['min_h']
-        best_v = data['best_v']
         
-        # 投影处理 (N=4 时只取前3维)
-        if n_outcomes == 4:
-            plot_verts = verts[:, :3]
-            best_v_proj = best_v[:3]
-        else:
-            plot_verts = verts
-            best_v_proj = best_v
-        ax = fig.add_subplot(2, 3, plot_idx + 1, projection='3d')
-        style_3d_axis(ax)
+        verts_3d = data['verts'][:, :3]
+        best_v_3d = data['best_v'][:3]
         
-        # 设置视角：稍微太高，便于观察整体形状
-        ax.view_init(elev=30, azim=40)
+        ax = fig.add_subplot(2, 2, plot_i + 1, projection='3d')
         
-        # 关键：增加 labelpad 防止重叠
-        label_pad_val = 10 
-        ax.set_xlabel(r'$p_1$', labelpad=label_pad_val)
-        ax.set_ylabel(r'$p_2$', labelpad=label_pad_val)
-        ax.set_zlabel(r'$p_3$', labelpad=label_pad_val)
-        # --- 凸包与多面体渲染 ---
-        if len(plot_verts) >= 4:
+        # 应用新的坐标轴样式
+        style_axis_clean(ax)
+        
+        # --- A. 绘制凸包 ---
+        if len(verts_3d) >= 4:
             try:
-                if n_outcomes == 3:
-                    # N=3: 原点辅助法
-                    # 添加原点 (0,0,0) 构造四面体，然后只画不含原点的面
-                    verts_origin = np.vstack([plot_verts, [0,0,0]])
-                    hull = ConvexHull(verts_origin)
-                    # 筛选面：面的顶点索引中不包含最后一个点(即原点)
-                    faces = [verts_origin[s] for s in hull.simplices if len(plot_verts) not in s]
-                    alpha_val = 0.5
-                else:
-                    # N=4: 直接计算 3D 凸包
-                    hull = ConvexHull(plot_verts)
-                    faces = [plot_verts[s] for s in hull.simplices]
-                    alpha_val = 0.25 # 实体需要更透明
-                
-                # 创建多面体
-                poly = Poly3DCollection(faces, alpha=alpha_val, linewidths=0.5)
-                poly.set_facecolor(face_color_base)
+                hull = ConvexHull(verts_3d)
+                faces = [verts_3d[s] for s in hull.simplices]
+                poly = Poly3DCollection(faces, alpha=0.25, linewidths=0.5)
+                poly.set_facecolor(face_color)
                 poly.set_edgecolor(edge_color)
                 ax.add_collection3d(poly)
-                
-            except Exception as e:
-                pass # 忽略退化情况
-        # --- 绘制顶点 ---
-        ax.scatter(plot_verts[:,0], plot_verts[:,1], plot_verts[:,2], 
-                   c='k', s=5, alpha=0.5, depthshade=True)
+            except: pass
         
-        # --- 绘制最优解 (菱形标记) ---
-        ax.scatter(best_v_proj[0], best_v_proj[1], best_v_proj[2], 
-                   c=best_pt_color, marker='D', s=50, edgecolors='white', linewidth=0.5,
-                   zorder=10, label=r'Min Entropy')
-        # --- 文字标注 (带边框) ---
-        # 使用 abs(min_h) 彻底解决 -0.0000 问题
-        display_h = abs(min_h)
-        info_txt = f"Iter {data['iter']}\n$H_{{\min}} = {display_h:.4f}$"
+        # --- B. 绘制顶点 ---
+        ax.scatter(verts_3d[:, 0], verts_3d[:, 1], verts_3d[:, 2], 
+                   c='k', s=10, alpha=0.4, linewidth=0, depthshade=True)
         
-        ax.text2D(0.05, 0.92, info_txt, transform=ax.transAxes,
-                  fontsize=10, verticalalignment='top',
-                  bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="gray", alpha=0.9, lw=0.5))
+        # --- C. 绘制最优解 ---
+        ax.scatter(best_v_3d[0], best_v_3d[1], best_v_3d[2], 
+                   c=best_pt_color, marker='D', s=80, 
+                   edgecolors='white', linewidth=1.0, zorder=10)
+
+        # --- D. 信息标注 ---
+        lb_val = abs(data['lb']) 
+        info_text = (f"Iter: {data['iter']}\n"
+                     f"Verts: {len(verts_3d)}\n"
+                     f"$h_{{-}}(\\mathcal{{E}})$: {lb_val:.4f}\n"
+                     f"$\\epsilon$: {data['gap']:.1e}")
+        # f"Iter {data['iter']}\n
+        # $H_{{\min}} = {display_h:.4f}$"
+        
+        ax.text2D(0.05, 0.95, info_text, transform=ax.transAxes,
+                  fontsize=11, verticalalignment='top',
+                  bbox=dict(boxstyle='round,pad=0.5', facecolor='white', 
+                            edgecolor='#cccccc', alpha=0.9))
+        
+        ax.view_init(elev=32, azim=45)
+    
+    # 启用真正的LaTeX渲染
+    # plt.rcParams['text.usetex'] = True
+
     plt.tight_layout()
-    # 微调子图间距
-    plt.subplots_adjust(wspace=0.15, hspace=0.15)
+    plt.subplots_adjust(left=0.05, right=0.995, wspace=0.01, hspace=0.02)
     plt.show()
 
 # ==========================================
-# 3. 运行
+# 4. 主程序
 # ==========================================
-if __name__ == "__main__":
-    # --- 用户配置区 ---
-    N = 4  # 结果数量 (3 或 4)
-    d = 80  # 希尔伯特空间维度 (可以是 2, 3, 4...)
-    # ------------------
-    
-    # 1. 生成随机 POVM
-    # 固定随机种子以便复现
-    # np.random.seed(42) 
-    # povm = generate_random_povm(d, N)
-    ms_qobj = random_haar_povm(d, k=N, n=d, real=False)
-    povm = [q.full() for q in ms_qobj]
-    
-    # print(f"生成的随机 POVM 示例 (第一个元素):\n{povm[0].round(3)}")
-    
-    # 2. 运行计算
-    history = run_outer_approximation(povm, max_iter=40)
-    
-    # 3. 绘图
-    plot_polytope_evolution(history, N)
 
+if __name__ == "__main__":
+    np.random.seed(42)
+    d = 100
+    m = 4
+    
+    # aux = []
+    # for _ in range(n):
+    #     M = np.random.randn(d, d) + 1j * np.random.randn(d, d)
+    #     M = M @ M.conj().T
+    #     aux.append(M)
+    
+    # S = sum(aux)
+    # Sinv = np.linalg.inv(np.linalg.cholesky(S))
+    # POVM_4 = [Sinv.conj().T @ M @ Sinv for M in aux]
+
+       # povm = generate_random_povm(d, N)
+    ms_qobj = random_haar_povm(d, k=m, n=d, real=False)
+    povm = [q.full() for q in ms_qobj]
+
+        # 1. 运行计算
+    hist_data = run_solver(povm, max_iter=100)
+    
+    # 2. 运行绘图 
+    plot_2x2_style(hist_data)
 
