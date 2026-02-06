@@ -1,19 +1,16 @@
 # Code for "Geometric Optimization for Tight Entropic Uncertainty Relations"
 
-<!--
-[![arXiv](https://img.shields.io/badge/arXiv-2507.20950-b31b1b.svg)](https://arxiv.org/abs/2507.20950)
-[![Language](https://img.shields.io/badge/Language-MATLAB-orange.svg)](https://www.mathworks.com/products/matlab.html)
--->
+[![arXiv](https://img.shields.io/badge/arXiv-2602.00595-b31b1b.svg)](https://arxiv.org/abs/2602.00595)
+[![Language](https://img.shields.io/badge/Language-PYTHON-orange.svg)]()
 
 **Authors:** Ma-Cheng Yang and Cong-Feng Qiao
 
-<!--
 This repository contains the source code associated with the research article:
 > **Geometric Optimization for Tight Entropic Uncertainty Relations**  
 > Ma-Cheng Yang and Cong-Feng Qiao  
-> *arXiv preprint arXiv:2507.20950 [quant-ph]* (2025).  
-> [View on arXiv](https://arxiv.org/abs/2507.20950)
--->
+> *arXiv preprint arXiv:2602.00595 [quant-ph]* (2026).  
+> [View on arXiv](https://arxiv.org/abs/2602.00595)
+
 
 ## 📋 Requirements
 
