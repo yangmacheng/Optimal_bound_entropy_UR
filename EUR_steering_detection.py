@@ -4,7 +4,7 @@ Quantum Steering Detection Based on Entropic Uncertainty Relations (EUR) Bounds 
 此脚本用于计算并对比两个测量不同 Tsallis 熵不确定性关系的下界（Bounds），并应用于量子导引。
 主要包含以下界限的计算：
 1. Maassen-Uffink (MU) Bound
-2. Review-Prevedel-Zyczkowski (RPZ) Bound 
+2. Rudnicki-Puchała-Życzkowski (RPZ) Bound 
 3. Coles-Piani (CP) Bound
 4. RPZ Majorization Bound 
 5. Optimal Bound 
