@@ -132,7 +132,7 @@ def calc_bounds(basis_U, basis_V):
 def RPZ_maj_bound_tsallis(U_list, alpha, base=np.e):
     """
     计算 RPZ (Rudnicki-Puchala-Zyczkowski) majorization 界。
-    利用矩阵拼接和奇异值分解构建优越化向量 s，然后计算其 Tsallis 熵。
+    利用矩阵拼接和奇异值分解构建 majorization 向量 s，然后计算其 Tsallis 熵。
     
     参数:
         U_list: 幺正矩阵列表
